@@ -42,7 +42,8 @@ PLATFORMINDEX_JSON = os.path.join("_data", "platformindex.json")
 
 REF_DATA_DIR = os.path.join("_data", "ref")
 
-LLMS_DIR = "_llms"
+LLMS_TMP_DIR = "_llms"
+LLMS_OUTPUT_DIR = "llms"
 
 ASSET_MD_FRONTMATTER = """---
 layout: asset
@@ -332,7 +333,7 @@ def update_file_links_with_lang(filename, pattern, language):
         f.write(updated_content)
 
 
-def generate_llms_full(index):
+def generate_llms_docs(index):
     llms_content = []
 
     # Add headline and intro
@@ -358,7 +359,7 @@ def generate_llms_full(index):
                 anchor = manuals_included.get(path_no_anchors)
                 llms_content.append(f"- [{title}](#{anchor})")
             else:
-                if not os.path.exists(LLMS_DIR + path_no_anchors + ".md"):
+                if not os.path.exists(LLMS_TMP_DIR + path_no_anchors + ".md"):
                     url = path if "https://" in path else "https://defold.com" + path
                     llms_content.append(f"- [{title}]({url})")
                     print(f" -> skipping {path}")
@@ -366,7 +367,7 @@ def generate_llms_full(index):
                     anchor = path_no_anchors.replace("/", ":").lstrip(":")
                     manuals_included[path_no_anchors] = anchor
                     llms_content.append(f"- [{title}](#{anchor})")
-                    contents = read_as_string(LLMS_DIR + path_no_anchors + ".md")
+                    contents = read_as_string(LLMS_TMP_DIR + path_no_anchors + ".md")
                     manuals_content.append(f"<!-- {path} -->\n")
                     manuals_content.append(contents)
                     manuals_content.append("")
@@ -375,8 +376,327 @@ def generate_llms_full(index):
 
     llms_content.extend(manuals_content)
 
-    # Write the content to llms-full.txt
-    with open("llms-full.txt", "w", encoding="utf-8") as f:
+    # Write the content to llms/docs.md
+    makedirs(LLMS_OUTPUT_DIR)
+    with open(os.path.join(LLMS_OUTPUT_DIR, "docs.md"), "w", encoding="utf-8") as f:
+        f.write("\n".join(llms_content))
+
+
+def generate_api_anchor(element):
+    """Generates a markdown-friendly anchor link for an API element."""
+    type_prefix = element.get('type', 'unknown').lower()
+    name = element.get('name', 'unnamed').lower()
+    # Basic sanitization: replace common non-alphanumeric chars with hyphens
+    name = name.replace('()', '').replace('.', '-').replace('_', '-')
+    # Remove any remaining characters that are not alphanumeric or hyphens
+    name = re.sub(r'[^a-z0-9-]+', '', name)
+    # Ensure anchor doesn't start or end with hyphen (less critical for IDs)
+    name = name.strip('-')
+    if not name: # Handle cases where name becomes empty after sanitization
+        name = 'unnamed-element'
+    return f"{type_prefix}-{name}"
+
+def format_api_params(parameters):
+    if not parameters:
+        return "None"
+    lines = []
+    lines.append("| Name | Type | Description |")
+    lines.append("|------|------|-------------|")
+    for param in parameters:
+        name = param.get('name', '')
+        # Ensure types is a list before joining
+        types_list = param.get('types', [])
+        if not isinstance(types_list, list):
+            types_list = [str(types_list)] # Handle non-list types if necessary
+        types = ", ".join(types_list)
+        # Sanitize doc for table cell: remove newlines and pipes
+        doc_value = param.get('doc') # Get doc value, could be None
+        doc = doc_value if doc_value is not None else '' # Ensure doc is a string
+        doc = doc.replace('\n', ' ').replace('|', '\\|')
+        lines.append(f"| `{name}` | `{types}` | {doc} |")
+    return "\n".join(lines)
+
+def format_function_returns(returnvalues):
+    """Formats function return values into a markdown table."""
+    if not returnvalues:
+        return ""
+    lines = []
+    lines.append("**RETURNS**\n")
+    lines.append("| Name | Type | Description |")
+    lines.append("|------|------|-------------|")
+    for ret in returnvalues:
+        name = ret.get('name', '')
+        # Ensure types is a list before joining
+        types_list = ret.get('types', [])
+        if not isinstance(types_list, list):
+            types_list = [str(types_list)] # Handle non-list types if necessary
+        types = ", ".join(types_list)
+         # Sanitize doc for table cell: remove newlines and pipes
+        doc_value = ret.get('doc') # Get doc value, could be None
+        doc = doc_value if doc_value is not None else '' # Ensure doc is a string
+        doc = doc.replace('\n', ' ').replace('|', '\\|')
+        lines.append(f"| `{name}` | `{types}` | {doc} |")
+    return "\n".join(lines)
+
+def generate_llms_api(ref):
+    md_lines = []
+    elements = ref.get('elements', [])
+    info = ref.get('info', {})
+
+    # Filter elements by type (matching api.html)
+    functions = sorted([e for e in elements if e.get('type') == 'FUNCTION'], key=lambda x: x.get('name', ''))
+    variables = sorted([e for e in elements if e.get('type') == 'VARIABLE'], key=lambda x: x.get('name', '')) # Constants
+    messages = sorted([e for e in elements if e.get('type') == 'MESSAGE'], key=lambda x: x.get('name', ''))
+    properties = sorted([e for e in elements if e.get('type') == 'PROPERTY'], key=lambda x: x.get('name', ''))
+    macros = sorted([e for e in elements if e.get('type') == 'MACRO'], key=lambda x: x.get('name', ''))
+    enums = sorted([e for e in elements if e.get('type') == 'ENUM'], key=lambda x: x.get('name', ''))
+
+    # --- Header ---
+    md_lines.append(f"## {info.get('brief', '')}")
+    md_lines.append(f"{info.get('description', '')}\n")
+    md_lines.append(f"```lua")
+
+    if functions:
+        md_lines.append("-- Functions")
+        for func in functions:
+            name = func.get('name', '')
+            params = func.get('parameters', [])
+            param_names = [p.get('name', '') for p in params]
+            signature = f"{name}({', '.join(param_names)})"
+            brief = func.get('brief', '')
+            line = signature
+            if brief:
+                line += f" -- {brief}"
+            md_lines.append(line)
+        md_lines.append("")
+
+    if variables:
+        md_lines.append("-- Constants")
+        for var in variables:
+            md_lines.append(f"{var.get('name', '')} -- {var.get('brief', '')}")
+        md_lines.append("")
+
+    if enums:
+        md_lines.append("-- Enums")
+        for enum_ in enums:
+            md_lines.append(f"{enum_.get('name', '')} -- {enum_.get('brief', '')}")
+        md_lines.append("")
+
+    if messages:
+        md_lines.append("-- Messages")
+        for msg in messages:
+            md_lines.append(f"{msg.get('name', '')} -- {msg.get('brief', '')}")
+        md_lines.append("")
+
+    if properties:
+        md_lines.append("-- Properties")
+        for prop in properties:
+            md_lines.append(f"{prop.get('name', '')} -- {prop.get('brief', '')}")
+        md_lines.append("")
+
+    if macros:
+        md_lines.append("-- Macros")
+        for macro in macros:
+            anchor = generate_api_anchor(macro)
+            md_lines.append(f"{macro.get('name', '')} -- {macro.get('brief', '')}")
+        md_lines.append("")
+
+    md_lines.append(f"```\n")
+
+
+    # --- Detail Sections ---
+    if functions:
+        md_lines.append("### Functions Details\n")
+        for i, func in enumerate(functions):
+            anchor = generate_api_anchor(func)
+            name = func.get('name', '')
+            params = func.get('parameters', [])
+            param_names = [p.get('name', '') for p in params]
+            signature = f"{name}({', '.join(param_names)})"
+
+            # md_lines.append(f"<a id=\"{anchor}\"></a>") # Explicit anchor target
+            md_lines.append(f"### `{signature}`") # Use H3 for details
+            md_lines.append(f"{func.get('description', '')}\n")
+
+            md_lines.append("**PARAMETERS**\n")
+            md_lines.append(format_api_params(params))
+            md_lines.append("")
+
+            returns_md = format_function_returns(func.get('returnvalues', []))
+            if returns_md:
+                md_lines.append(returns_md)
+                md_lines.append("")
+
+            examples = func.get('examples', '')
+            if examples:
+                md_lines.append("**EXAMPLES**\n")
+                # Assuming examples are already markdown formatted (e.g., fenced code blocks)
+                md_lines.append(examples)
+                md_lines.append("")
+
+            if i < len(functions) - 1:
+                md_lines.append("---") # Horizontal rule
+        md_lines.append("")
+
+
+    if variables:
+        md_lines.append("## Constants Details")
+        for i, var in enumerate(variables):
+            anchor = generate_api_anchor(var)
+            name = var.get('name', '')
+
+            md_lines.append(f"<a id=\"{anchor}\"></a>")
+            md_lines.append(f"### `{name}`") # Use H3 for details
+            md_lines.append(f"{var.get('description', '')}\n")
+
+            # api.html shows parameters for variables sometimes
+            params = var.get('parameters', [])
+            if params:
+                 md_lines.append("**PARAMETERS**\n")
+                 md_lines.append(format_api_params(params))
+                 md_lines.append("")
+
+            # api.html doesn't show examples for constants, but include if present
+            examples = var.get('examples', '')
+            if examples:
+                md_lines.append("**EXAMPLES**\n")
+                md_lines.append(examples)
+                md_lines.append("")
+
+            if i < len(variables) - 1:
+                md_lines.append("---")
+        md_lines.append("")
+
+    # Enums Details (api.html lacks details, providing basic structure)
+    if enums:
+        md_lines.append("## Enums Details")
+        for i, enum_ in enumerate(enums):
+            anchor = generate_api_anchor(enum_)
+            name = enum_.get('name', '')
+
+            md_lines.append(f"<a id=\"{anchor}\"></a>")
+            md_lines.append(f"### `{name}`")
+            md_lines.append(f"{enum_.get('description', '')}\n")
+
+            # Attempt to display enum values if available (key name might vary)
+            values = enum_.get('members', []) # Common key name for enum values
+            if values:
+                md_lines.append("**VALUES**\n")
+                md_lines.append("| Name | Description |")
+                md_lines.append("|------|-------------|")
+                for val in values:
+                     # Sanitize doc for table cell
+                     doc = val.get('doc', '').replace('\n', ' ').replace('|', '\\|')
+                     md_lines.append(f"| `{val.get('name', '')}` | {doc} |")
+                md_lines.append("")
+
+            examples = enum_.get('examples', '')
+            if examples:
+                md_lines.append("**EXAMPLES**\n")
+                md_lines.append(examples)
+                md_lines.append("")
+
+            if i < len(enums) - 1:
+                md_lines.append("---")
+        md_lines.append("")
+
+
+    if messages:
+        md_lines.append("## Messages Details")
+        for i, msg in enumerate(messages):
+            anchor = generate_api_anchor(msg)
+            name = msg.get('name', '')
+
+            md_lines.append(f"<a id=\"{anchor}\"></a>")
+            md_lines.append(f"### `{name}`")
+            md_lines.append(f"{msg.get('description', '')}\n")
+
+            params = msg.get('parameters', [])
+            if params:
+                 md_lines.append("**PARAMETERS**\n")
+                 md_lines.append(format_api_params(params))
+                 md_lines.append("")
+
+            examples = msg.get('examples', '')
+            if examples:
+                md_lines.append("**EXAMPLES**\n")
+                md_lines.append(examples)
+                md_lines.append("")
+
+            if i < len(messages) - 1:
+                md_lines.append("---")
+        md_lines.append("")
+
+
+    if properties:
+        md_lines.append("## Properties Details")
+        for i, prop in enumerate(properties):
+            anchor = generate_api_anchor(prop)
+            name = prop.get('name', '')
+
+            md_lines.append(f"<a id=\"{anchor}\"></a>")
+            md_lines.append(f"### `{name}`")
+            md_lines.append(f"{prop.get('description', '')}\n")
+
+            # Add type info if available (example key)
+            prop_type = prop.get('types', [])
+            if prop_type:
+                 md_lines.append(f"**Type:** `{', '.join(prop_type)}`\n")
+
+            examples = prop.get('examples', '')
+            if examples:
+                md_lines.append("**EXAMPLES**\n")
+                md_lines.append(examples)
+                md_lines.append("")
+
+            if i < len(properties) - 1:
+                md_lines.append("---")
+        md_lines.append("")
+
+
+    if macros:
+        md_lines.append("## Macros Details")
+        for i, macro in enumerate(macros):
+            anchor = generate_api_anchor(macro)
+            name = macro.get('name', '')
+
+            md_lines.append(f"<a id=\"{anchor}\"></a>")
+            md_lines.append(f"### `{name}`")
+            md_lines.append(f"{macro.get('description', '')}\n")
+
+            # Macros might have parameters, include if present (example)
+            params = macro.get('parameters', [])
+            if params:
+                 md_lines.append("**PARAMETERS**\n")
+                 md_lines.append(format_api_params(params))
+                 md_lines.append("")
+
+            examples = macro.get('examples', '')
+            if examples:
+                md_lines.append("**EXAMPLES**\n")
+                md_lines.append(examples)
+                md_lines.append("")
+
+            if i < len(macros) - 1:
+                md_lines.append("---")
+        md_lines.append("")
+
+
+    return "\n".join(md_lines)
+
+
+def generate_llms_ref(refindex, apis):
+    llms_content = []
+
+    # Add headline and intro
+    llms_content.append("# Defold Reference API\n")
+
+    for api in apis.values():
+        llms_content.append(generate_llms_api(api))
+
+    # Write the content to llms/ref.md
+    makedirs(LLMS_OUTPUT_DIR)
+    with open(os.path.join(LLMS_OUTPUT_DIR, "ref.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(llms_content))
 
 
@@ -463,9 +783,9 @@ def process_docs(download = False):
                         if "This manual has been replaced by the" in contents or "This manual has moved" in contents or "This manual has been moved" in contents:
                             pass
                         else:
-                            target_dir = os.path.join(LLMS_DIR, manuals_dst_dir)
-                            os.makedirs(target_dir, exist_ok=True)
-                            target_file = os.path.join(LLMS_DIR, filename)
+                            target_dir = os.path.join(LLMS_TMP_DIR, manuals_dst_dir)
+                            makedirs(target_dir)
+                            target_file = os.path.join(LLMS_TMP_DIR, filename)
                             with open(target_file, "w") as f:
                                 f.write(contents)
                             # include files
@@ -552,8 +872,8 @@ def process_docs(download = False):
         shared_images_dst_dir = os.path.join("shared", "images")
         rmcopytree(shared_images_src_dir, shared_images_dst_dir)
 
-        print("...generating llms-full.txt")
-        generate_llms_full(index)
+        print("...llms/docs.md")
+        generate_llms_docs(index)
 
         print("Done")
 
@@ -1071,6 +1391,7 @@ LUA_APIS = [ "base", "bit", "coroutine", "debug", "io", "math", "os", "package",
 def process_refdoc(download = False):
     refindex = []
     branchindex = [ "alpha", "beta", "stable" ]
+    apis = {}
     ref_root_dir = "ref"
     rmmkdir(ref_root_dir)
 
@@ -1129,6 +1450,8 @@ def process_refdoc(download = False):
                             "branch": branch,
                             "type": api_type
                         })
+                        if branch == "stable":
+                            apis[api["info"]["name"]] = api
 
         # add extensions
         extensions_data_dir = os.path.join("_data", "extensions")
@@ -1141,6 +1464,8 @@ def process_refdoc(download = False):
                 "branch": branch,
                 "type": "extension"
             })
+            if branch == "stable":
+                apis[extension["info"]["name"]] = extension
 
     # copy stable files to ref/ for backwards compatibility
     for item in os.listdir(os.path.join("ref", "stable")):
@@ -1156,6 +1481,9 @@ def process_refdoc(download = False):
 
     # write branch index
     write_as_json(os.path.join("_data", "branchindex.json"), branchindex)
+
+    # write llms/ref.md
+    generate_llms_ref(refindex, apis)
 
 
 def process_string_for_indexing(data):
