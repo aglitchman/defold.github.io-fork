@@ -487,6 +487,7 @@ def format_api_for_llms(ref, api):
                 code = code.replace('&gt;', '>')
                 code = code.replace('&lt;', '<')
                 code = code.replace('&amp;', '&')
+                code = code.replace('&#39;', "'")
                 code = re.sub(r'<[^<]+?>', '', code)
                 if code.strip().startswith("```lua"):
                     code = f"Example for {signature}:\n{code}"
