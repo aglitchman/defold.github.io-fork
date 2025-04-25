@@ -438,33 +438,31 @@ def format_function_returns(returnvalues):
         lines.append(f"| `{name}` | `{types}` | {doc} |")
     return "\n".join(lines)
 
-def generate_llms_api(ref, api):
+def format_api_for_llms(ref, api):
     md_lines = []
     elements = api.get('elements', [])
     info = api.get('info', {})
 
     # Filter elements by type (matching api.html)
-    functions = sorted([e for e in elements if e.get('type') == 'FUNCTION'], key=lambda x: x.get('name', ''))
-    constants = sorted([e for e in elements if e.get('type') == 'VARIABLE'], key=lambda x: x.get('name', ''))
-    messages = sorted([e for e in elements if e.get('type') == 'MESSAGE'], key=lambda x: x.get('name', ''))
-    properties = sorted([e for e in elements if e.get('type') == 'PROPERTY'], key=lambda x: x.get('name', ''))
-    macros = sorted([e for e in elements if e.get('type') == 'MACRO'], key=lambda x: x.get('name', ''))
-    enums = sorted([e for e in elements if e.get('type') == 'ENUM'], key=lambda x: x.get('name', ''))
+    functions = [e for e in elements if e.get('type') == 'FUNCTION']
+    constants = [e for e in elements if e.get('type') == 'VARIABLE' or e.get('type') == 'STRING']
+    messages = [e for e in elements if e.get('type') == 'MESSAGE']
+    properties = [e for e in elements if e.get('type') == 'PROPERTY']
+    macros = [e for e in elements if e.get('type') == 'MACRO']
 
     # --- Header ---
+    api_brief = info.get('brief', '')
     if ref["type"] == "extension":
-        md_lines.append(f"## {info.get('brief', '')} (extension)")
-        md_lines.append(f"{info.get('description', '')}")
-        md_lines.append(f"The extension needs to be added to the game.project file manually as dependency.\n")
+        md_lines.append(f"## {api_brief} (extension)")
+        md_lines.append(f"> The extension needs to be added to the game.project file manually as dependency.\n")
+        md_lines.append(f"{info.get('description', '')}\n")
     else:
-        md_lines.append(f"## {info.get('brief', '')}")
+        md_lines.append(f"## {api_brief}")
         md_lines.append(f"{info.get('description', '')}\n")
 
-    if ref["type"] == "c":
-        md_lines.append(f"```c")
-    else:
-        md_lines.append(f"```lua")
+    md_lines.append(f"```lua")
 
+    examples_list = []
     if functions:
         md_lines.append("-- Functions")
         for func in functions:
@@ -473,30 +471,50 @@ def generate_llms_api(ref, api):
             param_names = [p.get('name', '') for p in params]
             signature = f"{name}({', '.join(param_names)})"
             brief = func.get('brief', '').replace('\n', '')
+            description = func.get('description', '')
+            if not brief and description and '\n' not in description:
+                brief = description
             line = signature
             if brief:
                 line += f" -- {brief}"
             md_lines.append(line)
+
+            examples = func.get('examples', '')
+            if examples:
+                # Clean up examples by replacing <div class="codehilite"> with ```lua
+                code = re.sub(r'<div class="codehilite"><pre>(.*?)</pre></div>', r'```lua\n\1```', examples, flags=re.DOTALL)
+                code = code.replace('&quot;', '"')
+                code = code.replace('&gt;', '>')
+                code = code.replace('&lt;', '<')
+                code = code.replace('&amp;', '&')
+                code = re.sub(r'<[^<]+?>', '', code)
+                if code.strip().startswith("```lua"):
+                    code = f"Example for {signature}:\n{code}"
+                examples_list.append(code + "\n")
         md_lines.append("")
 
     if constants:
         md_lines.append("-- Constants")
         for var in constants:
             name = var.get('name', '')
+            description = var.get('description', '')
             brief = var.get('brief', '')
+            if not brief and description and '\n' not in description:
+                brief = description
             if brief:
                 brief = f" -- {brief}"
+            if ref["type"] == "extension":
+                # Workaround for extension constants not having the extension name in the name field
+                name = f"{api_brief}.{name}"
             md_lines.append(f"{name}{brief}")
         md_lines.append("")
 
-    if enums:
-        md_lines.append("-- Enums")
-        for enum_ in enums:
-            md_lines.append(f"{enum_.get('name', '')} -- {enum_.get('brief', '')}")
-        md_lines.append("")
+    if md_lines and md_lines[-1] == "":
+        md_lines.pop()
+    md_lines.append(f"```\n")
 
     if messages:
-        md_lines.append("-- Messages")
+        md_lines.append("### Component messages")
         for msg in messages:
             extra = []
             params = []
@@ -508,207 +526,32 @@ def generate_llms_api(ref, api):
             if len(params) > 0:
                 extra.append(f"{{{', '.join(params)}}}")
             extra.append(msg.get('brief', '').replace('\n', ''))
-            md_lines.append(f"\"{msg.get('name', '')}\" -- {', '.join(extra)}")
+            md_lines.append(f"- `{msg.get('name', '')}` - {', '.join(extra)}")
         md_lines.append("")
 
     if properties:
-        md_lines.append("-- Properties")
+        md_lines.append("### Component properties")
         for prop in properties:
             name = prop.get('name', '')
             brief = prop.get('brief', '')
             if brief:
-                brief = brief.replace('<span class="type">', '(').replace('</span>', ')')
-                brief = f" -- {brief}"
-            md_lines.append(f"\"{name}\"{brief}")
+                brief = brief.replace('<span class="type">', '(').replace('</span>', ') -')
+                brief = f"{brief}"
+            md_lines.append(f"- `{name}` {brief}")
         md_lines.append("")
 
     if macros:
-        md_lines.append("-- Macros")
+        md_lines.append("### Macros")
         for macro in macros:
             anchor = generate_api_anchor(macro)
-            md_lines.append(f"{macro.get('name', '')} -- {macro.get('brief', '')}")
+            md_lines.append(f"- `{macro.get('name', '')}`, {macro.get('brief', '')}")
         md_lines.append("")
 
-    md_lines.append(f"```\n")
-
-
-    # --- Detail Sections ---
-    # if functions:
-    #     md_lines.append("### Functions Details\n")
-    #     for i, func in enumerate(functions):
-    #         anchor = generate_api_anchor(func)
-    #         name = func.get('name', '')
-    #         params = func.get('parameters', [])
-    #         param_names = [p.get('name', '') for p in params]
-    #         signature = f"{name}({', '.join(param_names)})"
-
-    #         # md_lines.append(f"<a id=\"{anchor}\"></a>") # Explicit anchor target
-    #         md_lines.append(f"### `{signature}`") # Use H3 for details
-    #         md_lines.append(f"{func.get('description', '')}\n")
-
-    #         md_lines.append("**PARAMETERS**\n")
-    #         md_lines.append(format_api_params(params))
-    #         md_lines.append("")
-
-    #         returns_md = format_function_returns(func.get('returnvalues', []))
-    #         if returns_md:
-    #             md_lines.append(returns_md)
-    #             md_lines.append("")
-
-    #         examples = func.get('examples', '')
-    #         if examples:
-    #             md_lines.append("**EXAMPLES**\n")
-    #             # Assuming examples are already markdown formatted (e.g., fenced code blocks)
-    #             md_lines.append(examples)
-    #             md_lines.append("")
-
-    #         if i < len(functions) - 1:
-    #             md_lines.append("---") # Horizontal rule
-    #     md_lines.append("")
-
-
-    # if constants:
-    #     md_lines.append("## Constants Details")
-    #     for i, var in enumerate(constants):
-    #         anchor = generate_api_anchor(var)
-    #         name = var.get('name', '')
-
-    #         md_lines.append(f"<a id=\"{anchor}\"></a>")
-    #         md_lines.append(f"### `{name}`") # Use H3 for details
-    #         md_lines.append(f"{var.get('description', '')}\n")
-
-    #         # api.html shows parameters for constants sometimes
-    #         params = var.get('parameters', [])
-    #         if params:
-    #              md_lines.append("**PARAMETERS**\n")
-    #              md_lines.append(format_api_params(params))
-    #              md_lines.append("")
-
-    #         # api.html doesn't show examples for constants, but include if present
-    #         examples = var.get('examples', '')
-    #         if examples:
-    #             md_lines.append("**EXAMPLES**\n")
-    #             md_lines.append(examples)
-    #             md_lines.append("")
-
-    #         if i < len(constants) - 1:
-    #             md_lines.append("---")
-    #     md_lines.append("")
-
-    # # Enums Details (api.html lacks details, providing basic structure)
-    # if enums:
-    #     md_lines.append("## Enums Details")
-    #     for i, enum_ in enumerate(enums):
-    #         anchor = generate_api_anchor(enum_)
-    #         name = enum_.get('name', '')
-
-    #         md_lines.append(f"<a id=\"{anchor}\"></a>")
-    #         md_lines.append(f"### `{name}`")
-    #         md_lines.append(f"{enum_.get('description', '')}\n")
-
-    #         # Attempt to display enum values if available (key name might vary)
-    #         values = enum_.get('members', []) # Common key name for enum values
-    #         if values:
-    #             md_lines.append("**VALUES**\n")
-    #             md_lines.append("| Name | Description |")
-    #             md_lines.append("|------|-------------|")
-    #             for val in values:
-    #                  # Sanitize doc for table cell
-    #                  doc = val.get('doc', '').replace('\n', ' ').replace('|', '\\|')
-    #                  md_lines.append(f"| `{val.get('name', '')}` | {doc} |")
-    #             md_lines.append("")
-
-    #         examples = enum_.get('examples', '')
-    #         if examples:
-    #             md_lines.append("**EXAMPLES**\n")
-    #             md_lines.append(examples)
-    #             md_lines.append("")
-
-    #         if i < len(enums) - 1:
-    #             md_lines.append("---")
-    #     md_lines.append("")
-
-
-    # if messages:
-    #     md_lines.append("## Messages Details")
-    #     for i, msg in enumerate(messages):
-    #         anchor = generate_api_anchor(msg)
-    #         name = msg.get('name', '')
-
-    #         md_lines.append(f"<a id=\"{anchor}\"></a>")
-    #         md_lines.append(f"### `{name}`")
-    #         md_lines.append(f"{msg.get('description', '')}\n")
-
-    #         params = msg.get('parameters', [])
-    #         if params:
-    #              md_lines.append("**PARAMETERS**\n")
-    #              md_lines.append(format_api_params(params))
-    #              md_lines.append("")
-
-    #         examples = msg.get('examples', '')
-    #         if examples:
-    #             md_lines.append("**EXAMPLES**\n")
-    #             md_lines.append(examples)
-    #             md_lines.append("")
-
-    #         if i < len(messages) - 1:
-    #             md_lines.append("---")
-    #     md_lines.append("")
-
-
-    # if properties:
-    #     md_lines.append("## Properties Details")
-    #     for i, prop in enumerate(properties):
-    #         anchor = generate_api_anchor(prop)
-    #         name = prop.get('name', '')
-
-    #         md_lines.append(f"<a id=\"{anchor}\"></a>")
-    #         md_lines.append(f"### `{name}`")
-    #         md_lines.append(f"{prop.get('description', '')}\n")
-
-    #         # Add type info if available (example key)
-    #         prop_type = prop.get('types', [])
-    #         if prop_type:
-    #              md_lines.append(f"**Type:** `{', '.join(prop_type)}`\n")
-
-    #         examples = prop.get('examples', '')
-    #         if examples:
-    #             md_lines.append("**EXAMPLES**\n")
-    #             md_lines.append(examples)
-    #             md_lines.append("")
-
-    #         if i < len(properties) - 1:
-    #             md_lines.append("---")
-    #     md_lines.append("")
-
-
-    # if macros:
-    #     md_lines.append("## Macros Details")
-    #     for i, macro in enumerate(macros):
-    #         anchor = generate_api_anchor(macro)
-    #         name = macro.get('name', '')
-
-    #         md_lines.append(f"<a id=\"{anchor}\"></a>")
-    #         md_lines.append(f"### `{name}`")
-    #         md_lines.append(f"{macro.get('description', '')}\n")
-
-    #         # Macros might have parameters, include if present (example)
-    #         params = macro.get('parameters', [])
-    #         if params:
-    #              md_lines.append("**PARAMETERS**\n")
-    #              md_lines.append(format_api_params(params))
-    #              md_lines.append("")
-
-    #         examples = macro.get('examples', '')
-    #         if examples:
-    #             md_lines.append("**EXAMPLES**\n")
-    #             md_lines.append(examples)
-    #             md_lines.append("")
-
-    #         if i < len(macros) - 1:
-    #             md_lines.append("---")
-    #     md_lines.append("")
-
+    if examples_list:
+        md_lines.append("### Examples")
+        md_lines.append("")
+        md_lines.append("\n".join(examples_list))
+        md_lines.append("")
 
     return "\n".join(md_lines)
 
@@ -718,9 +561,9 @@ def generate_llms_ref(refindex, apis):
     llms_content.append("# Defold Reference API\n")
 
     for ref in refindex:
-        if ref["branch"] == "stable": # and (ref["type"] == "defold" or ref["type"] == "extension"):
+        if ref["branch"] == "stable" and ref["type"] != "c":
             api = apis[ref["url"]]
-            llms_content.append(generate_llms_api(ref, api))
+            llms_content.append(format_api_for_llms(ref, api))
 
     # Write the content to llms/ref.md
     makedirs(LLMS_OUTPUT_DIR)
@@ -1504,7 +1347,11 @@ def process_refdoc(download = False):
         if not os.path.isdir(s):
             shutil.copy2(s, d)
 
-    refindex.sort(key=lambda x: x.get("name").lower() + x.get("branch").lower())
+    refindex.sort(key=lambda x: (
+        {"defold": 1, "lua": 2, "extension": 3, "c": 4}.get(x.get("type", ""), 5),
+        x.get("name", "").lower(),
+        x.get("branch", "").lower()
+    ))
 
     # write refdoc index
     write_as_json(os.path.join("_data", "refindex.json"), refindex)
